@@ -28,6 +28,7 @@ import (
 
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
+	"sigs.k8s.io/external-dns/provider"
 )
 
 type MockDomainClient struct {
@@ -309,21 +310,21 @@ func TestLinodeApplyChanges(t *testing.T) {
 		Name:   "",
 		Target: "txt",
 	}}, nil).Once() // foo.com TXT record exists
-	
+
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
 		2,
 		mock.Anything,
 	).Return([]linodego.DomainRecord{}, nil).Once() // create.bar.io A doesn't exist
-	
+
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
 		2,
 		mock.Anything,
 	).Return([]linodego.DomainRecord{}, nil).Once() // bar.io A doesn't exist
-	
+
 	// For updates: checking if foo.com A exists
 	mockDomainClient.On(
 		"ListDomainRecords",
@@ -336,7 +337,7 @@ func TestLinodeApplyChanges(t *testing.T) {
 		Name:   "",
 		Target: "targetFoo",
 	}}, nil).Once()
-	
+
 	// For deletes: checking if api.baz.com A exists and api.baz.com TXT exists
 	mockDomainClient.On(
 		"ListDomainRecords",
@@ -349,7 +350,7 @@ func TestLinodeApplyChanges(t *testing.T) {
 		Name:   "api",
 		Target: "targetBaz",
 	}}, nil).Once()
-	
+
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
@@ -580,6 +581,1293 @@ func TestLinodeApplyChangesNoChanges(t *testing.T) {
 
 	err := provider.ApplyChanges(context.Background(), &plan.Changes{})
 	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Error Handling Tests
+
+func TestLinodeRecords_ListDomainsError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{}, assert.AnError).Once()
+
+	_, err := provider.Records(context.Background())
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeRecords_ListDomainRecordsError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return(createZones(), nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, assert.AnError).Once()
+
+	_, err := provider.Records(context.Background())
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_FetchZonesError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{}, assert.AnError).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_CreateRecordError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return(&linodego.DomainRecord{}, assert.AnError).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.NoError(t, err) // submitChanges logs errors but doesn't return them
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_UpdateRecordError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{{
+		ID:     11,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	mockDomainClient.On(
+		"UpdateDomainRecord",
+		mock.Anything,
+		1,
+		11,
+		mock.Anything,
+	).Return(&linodego.DomainRecord{}, assert.AnError).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		UpdateNew: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.NoError(t, err) // submitChanges logs errors but doesn't return them
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_DeleteRecordError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{{
+		ID:     11,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	mockDomainClient.On(
+		"DeleteDomainRecord",
+		mock.Anything,
+		1,
+		11,
+	).Return(assert.AnError).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Delete: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+		}},
+	})
+	require.NoError(t, err) // submitChanges logs errors but doesn't return them
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_InvalidRecordType(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	// The error should occur during getRecordIDFiltered when trying to convert the record type
+	// So we don't need to set up ListDomainRecords expectation
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "INVALID",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Helper Function Tests
+
+func TestGetWeight(t *testing.T) {
+	// Test non-NS record types
+	weight := getWeight(linodego.RecordTypeA)
+	assert.NotNil(t, weight)
+	assert.Equal(t, 1, *weight)
+
+	weight = getWeight(linodego.RecordTypeAAAA)
+	assert.NotNil(t, weight)
+	assert.Equal(t, 1, *weight)
+
+	weight = getWeight(linodego.RecordTypeCNAME)
+	assert.NotNil(t, weight)
+	assert.Equal(t, 1, *weight)
+
+	weight = getWeight(linodego.RecordTypeTXT)
+	assert.NotNil(t, weight)
+	assert.Equal(t, 1, *weight)
+
+	// Test NS record type
+	weight = getWeight(linodego.RecordTypeNS)
+	assert.NotNil(t, weight)
+	assert.Equal(t, 0, *weight)
+}
+
+func TestGetPort(t *testing.T) {
+	port := getPort()
+	assert.NotNil(t, port)
+	assert.Equal(t, 0, *port)
+}
+
+func TestGetPriority(t *testing.T) {
+	priority := getPriority()
+	assert.NotNil(t, priority)
+	assert.Equal(t, 0, *priority)
+}
+
+func TestGetRecordID_NoMatches(t *testing.T) {
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	records := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "www", Target: "1.2.3.4"},
+	}
+	ep := endpoint.Endpoint{DNSName: "api.example.com", RecordType: "A"}
+
+	matched := getRecordID(records, zone, ep)
+	assert.Empty(t, matched)
+}
+
+func TestGetRecordID_SingleMatch(t *testing.T) {
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	records := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "www", Target: "1.2.3.4"},
+		{ID: 2, Type: linodego.RecordTypeA, Name: "api", Target: "5.6.7.8"},
+	}
+	ep := endpoint.Endpoint{DNSName: "api.example.com", RecordType: "A"}
+
+	matched := getRecordID(records, zone, ep)
+	assert.Len(t, matched, 1)
+	assert.Equal(t, 2, matched[0].ID)
+	assert.Equal(t, "api", matched[0].Name)
+}
+
+func TestGetRecordID_MultipleMatches(t *testing.T) {
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	records := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "www", Target: "1.2.3.4"},
+		{ID: 2, Type: linodego.RecordTypeA, Name: "www", Target: "5.6.7.8"},
+	}
+	ep := endpoint.Endpoint{DNSName: "www.example.com", RecordType: "A"}
+
+	matched := getRecordID(records, zone, ep)
+	assert.Len(t, matched, 2)
+}
+
+func TestGetRecordID_RootRecord(t *testing.T) {
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	records := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "", Target: "1.2.3.4"},
+		{ID: 2, Type: linodego.RecordTypeA, Name: "www", Target: "5.6.7.8"},
+	}
+	ep := endpoint.Endpoint{DNSName: "example.com", RecordType: "A"}
+
+	matched := getRecordID(records, zone, ep)
+	assert.Len(t, matched, 1)
+	assert.Equal(t, 1, matched[0].ID)
+	assert.Equal(t, "", matched[0].Name)
+}
+
+func TestEndpointsByZone_NoMatchingZone(t *testing.T) {
+	zoneNameIDMapper := provider.ZoneIDName{}
+	zoneNameIDMapper.Add("1", "example.com")
+
+	endpoints := []*endpoint.Endpoint{
+		{DNSName: "test.other.com", RecordType: "A"},
+	}
+
+	result := endpointsByZone(zoneNameIDMapper, endpoints)
+	assert.Empty(t, result)
+}
+
+func TestEndpointsByZone_SingleZone(t *testing.T) {
+	zoneNameIDMapper := provider.ZoneIDName{}
+	zoneNameIDMapper.Add("1", "example.com")
+
+	endpoints := []*endpoint.Endpoint{
+		{DNSName: "test.example.com", RecordType: "A"},
+		{DNSName: "api.example.com", RecordType: "A"},
+	}
+
+	result := endpointsByZone(zoneNameIDMapper, endpoints)
+	assert.Len(t, result, 1)
+	assert.Len(t, result["1"], 2)
+}
+
+func TestEndpointsByZone_MultipleZones(t *testing.T) {
+	zoneNameIDMapper := provider.ZoneIDName{}
+	zoneNameIDMapper.Add("1", "example.com")
+	zoneNameIDMapper.Add("2", "other.com")
+
+	endpoints := []*endpoint.Endpoint{
+		{DNSName: "test.example.com", RecordType: "A"},
+		{DNSName: "api.other.com", RecordType: "A"},
+	}
+
+	result := endpointsByZone(zoneNameIDMapper, endpoints)
+	assert.Len(t, result, 2)
+	assert.Len(t, result["1"], 1)
+	assert.Len(t, result["2"], 1)
+}
+
+// Filtered Query Tests
+
+func TestFetchRecordsFiltered_Success(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	expectedRecords := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "test", Target: "1.2.3.4"},
+	}
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return(expectedRecords, nil).Once()
+
+	records, err := provider.fetchRecordsFiltered(context.Background(), 1, "test", linodego.RecordTypeA)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRecords, records)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestFetchRecordsFiltered_Error(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, assert.AnError).Once()
+
+	_, err := provider.fetchRecordsFiltered(context.Background(), 1, "test", linodego.RecordTypeA)
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestGetRecordIDFiltered_Success(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	ep := endpoint.Endpoint{DNSName: "test.example.com", RecordType: "A"}
+
+	expectedRecords := []linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "test", Target: "1.2.3.4"},
+	}
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return(expectedRecords, nil).Once()
+
+	records, err := provider.getRecordIDFiltered(context.Background(), 1, zone, ep)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRecords, records)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestGetRecordIDFiltered_ConvertRecordTypeError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	ep := endpoint.Endpoint{DNSName: "test.example.com", RecordType: "INVALID"}
+
+	_, err := provider.getRecordIDFiltered(context.Background(), 1, zone, ep)
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestGetRecordIDFiltered_FetchError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	ep := endpoint.Endpoint{DNSName: "test.example.com", RecordType: "A"}
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, assert.AnError).Once()
+
+	_, err := provider.getRecordIDFiltered(context.Background(), 1, zone, ep)
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// submitChanges Tests
+
+func TestSubmitChanges_DryRun(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       true,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+
+	changes := LinodeChanges{
+		Creates: []LinodeChangeCreate{{
+			Domain:  zone,
+			Options: linodego.DomainRecordCreateOptions{Type: "A", Name: "test", Target: "1.2.3.4"},
+		}},
+		Updates: []LinodeChangeUpdate{{
+			Domain:       zone,
+			DomainRecord: linodego.DomainRecord{ID: 1, Type: "A", Name: "test", Target: "1.2.3.4"},
+			Options:      linodego.DomainRecordUpdateOptions{Type: "A", Name: "test", Target: "5.6.7.8"},
+		}},
+		Deletes: []LinodeChangeDelete{{
+			Domain:       zone,
+			DomainRecord: linodego.DomainRecord{ID: 2, Type: "A", Name: "old", Target: "9.10.11.12"},
+		}},
+	}
+
+	// No mock expectations since DryRun should not call the API
+	err := provider.submitChanges(context.Background(), changes)
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestSubmitChanges_EmptyChanges(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	changes := LinodeChanges{
+		Creates: []LinodeChangeCreate{},
+		Updates: []LinodeChangeUpdate{},
+		Deletes: []LinodeChangeDelete{},
+	}
+
+	err := provider.submitChanges(context.Background(), changes)
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestSubmitChanges_CreateSuccess(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	createOpts := linodego.DomainRecordCreateOptions{
+		Type:   "A",
+		Name:   "test",
+		Target: "1.2.3.4",
+	}
+
+	changes := LinodeChanges{
+		Creates: []LinodeChangeCreate{{
+			Domain:  zone,
+			Options: createOpts,
+		}},
+	}
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		createOpts,
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	err := provider.submitChanges(context.Background(), changes)
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestSubmitChanges_UpdateSuccess(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+	updateOpts := linodego.DomainRecordUpdateOptions{
+		Type:   "A",
+		Name:   "test",
+		Target: "5.6.7.8",
+	}
+
+	changes := LinodeChanges{
+		Updates: []LinodeChangeUpdate{{
+			Domain:       zone,
+			DomainRecord: linodego.DomainRecord{ID: 1, Type: "A", Name: "test", Target: "1.2.3.4"},
+			Options:      updateOpts,
+		}},
+	}
+
+	mockDomainClient.On(
+		"UpdateDomainRecord",
+		mock.Anything,
+		1,
+		1,
+		updateOpts,
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	err := provider.submitChanges(context.Background(), changes)
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestSubmitChanges_DeleteSuccess(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	zone := linodego.Domain{Domain: "example.com", ID: 1}
+
+	changes := LinodeChanges{
+		Deletes: []LinodeChangeDelete{{
+			Domain:       zone,
+			DomainRecord: linodego.DomainRecord{ID: 1, Type: "A", Name: "test", Target: "1.2.3.4"},
+		}},
+	}
+
+	mockDomainClient.On(
+		"DeleteDomainRecord",
+		mock.Anything,
+		1,
+		1,
+	).Return(nil).Once()
+
+	err := provider.submitChanges(context.Background(), changes)
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// ApplyChanges Edge Cases
+
+func TestLinodeApplyChanges_UpdateRecordNotFound(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	// Return empty records - record to update doesn't exist
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	// Since record doesn't exist, it will create a new one
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		UpdateNew: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_DeleteRecordNotFound(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	// Return empty records - record to delete doesn't exist
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Delete: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+		}},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_TTLHandling(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.TTLSec == 600
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+			RecordTTL:  600,
+		}},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_DryRun(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       true,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	// No Create/Update/Delete expectations since it's dry run
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_AllRecordTypes(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	// Mock ListDomainRecords for each record type check (6 times)
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Times(6)
+
+	// Expect CreateDomainRecord for each type
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeA
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeAAAA
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeCNAME
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeTXT
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeSRV
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts linodego.DomainRecordCreateOptions) bool {
+			return opts.Type == linodego.RecordTypeNS && *opts.Weight == 0
+		}),
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			{DNSName: "a.example.com", RecordType: "A", Targets: []string{"1.2.3.4"}},
+			{DNSName: "aaaa.example.com", RecordType: "AAAA", Targets: []string{"::1"}},
+			{DNSName: "cname.example.com", RecordType: "CNAME", Targets: []string{"target.example.com"}},
+			{DNSName: "txt.example.com", RecordType: "TXT", Targets: []string{"text"}},
+			{DNSName: "srv.example.com", RecordType: "SRV", Targets: []string{"target"}},
+			{DNSName: "ns.example.com", RecordType: "NS", Targets: []string{"ns1.example.com"}},
+		},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_RecordAlreadyExists(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	// Return existing record
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	// No CreateDomainRecord should be called since record already exists
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.NoError(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeApplyChanges_GetRecordIDFilteredError(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, assert.AnError).Once()
+
+	err := provider.ApplyChanges(context.Background(), &plan.Changes{
+		Create: []*endpoint.Endpoint{{
+			DNSName:    "test.example.com",
+			RecordType: "A",
+			Targets:    []string{"1.2.3.4"},
+		}},
+	})
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Records Method Edge Cases
+
+func TestLinodeRecords_EmptyZones(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{}, nil).Once()
+
+	actual, err := provider.Records(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, actual)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeRecords_UnsupportedRecordType(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeCAA, Name: "", Target: "ca.example.com"},
+		{ID: 2, Type: linodego.RecordTypeA, Name: "", Target: "1.2.3.4"},
+	}, nil).Once()
+
+	actual, err := provider.Records(context.Background())
+	require.NoError(t, err)
+	// Only A record should be returned, CAA is unsupported
+	assert.Len(t, actual, 1)
+	assert.Equal(t, "A", actual[0].RecordType)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeRecords_TTLPreservation(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "test", Target: "1.2.3.4", TTLSec: 600},
+	}, nil).Once()
+
+	actual, err := provider.Records(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, actual, 1)
+	assert.Equal(t, endpoint.TTL(600), actual[0].RecordTTL)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeRecords_RootRecords(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{
+		{ID: 1, Type: linodego.RecordTypeA, Name: "", Target: "1.2.3.4"},
+		{ID: 2, Type: linodego.RecordTypeA, Name: "www", Target: "5.6.7.8"},
+	}, nil).Once()
+
+	actual, err := provider.Records(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, actual, 2)
+	assert.Equal(t, "example.com", actual[0].DNSName)
+	assert.Equal(t, "www.example.com", actual[1].DNSName)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeRecords_WithDomainFilter(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{"foo.com"}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return(createZones(), nil).Once()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return(createFooRecords(), nil).Once()
+
+	actual, err := provider.Records(context.Background())
+	require.NoError(t, err)
+	// Should only return records from foo.com (filtered)
+	assert.Len(t, actual, 2) // 2 supported records from foo.com
+	for _, ep := range actual {
+		assert.Contains(t, ep.DNSName, "foo.com")
+	}
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Zones Method Tests
+
+func TestLinodeZones_Success(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return(createZones(), nil).Once()
+
+	zones, err := provider.Zones(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, createZones(), zones)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeZones_Error(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{}, assert.AnError).Once()
+
+	_, err := provider.Zones(context.Background())
+	require.Error(t, err)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeZones_EmptyResult(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return([]linodego.Domain{}, nil).Once()
+
+	zones, err := provider.Zones(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, zones)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeZones_WithFilter(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{".com"}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.Anything,
+	).Return(createZones(), nil).Once()
+
+	zones, err := provider.Zones(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, zones, 2)
+	// Should only return foo.com and baz.com, not bar.io
+	for _, zone := range zones {
+		assert.True(t, zone.Domain == "foo.com" || zone.Domain == "baz.com")
+	}
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// fetchRecords Tests
+
+func TestLinodeFetchRecords_Success(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	expectedRecords := createFooRecords()
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return(expectedRecords, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRecords, records)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecords_Error(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:       &mockDomainClient,
+		domainFilter: endpoint.NewDomainFilter([]string{}),
+		DryRun:       false,
+	}
+
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, assert.AnError).Once()
+
+	_, err := provider.fetchRecords(context.Background(), 1)
+	require.Error(t, err)
 
 	mockDomainClient.AssertExpectations(t)
 }
