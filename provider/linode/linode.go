@@ -161,7 +161,7 @@ func (p *LinodeProvider) fetchRecordsFiltered(ctx context.Context, domainID int,
 	// Use X-Filter to filter records on the Linode API side
 	// Format: {"name": "value", "type": "value"}
 	filterStr := fmt.Sprintf(`{"name": "%s", "type": "%s"}`, name, recordType)
-	
+
 	opts := linodego.NewListOptions(0, filterStr)
 	records, err := p.Client.ListDomainRecords(ctx, domainID, opts)
 	if err != nil {
@@ -206,10 +206,14 @@ func (p *LinodeProvider) submitChanges(ctx context.Context, changes LinodeChange
 		if p.DryRun {
 			log.WithFields(logFields).Info("Would create record.")
 		} else if _, err := p.Client.CreateDomainRecord(ctx, change.Domain.ID, change.Options); err != nil {
-			log.WithFields(logFields).Errorf(
-				"Failed to Create record: %v",
-				err,
-			)
+			// convert to linodego.Error and log the correct reason for the error
+			apiErr, ok := err.(*linodego.Error)
+			if !ok {
+				log.WithFields(logFields).Errorf("Failed to Create record: %v", err)
+				continue
+			}
+			// log the reason for the failure from the api response
+			log.WithFields(logFields).Errorf("Failed to Create record: %v", apiErr.Message)
 		}
 	}
 
@@ -314,22 +318,6 @@ func (p *LinodeProvider) ApplyChanges(ctx context.Context, changes *plan.Changes
 		}
 
 		for _, ep := range creates {
-			// Use filtered query to check if record exists
-			matchedRecords, err := p.getRecordIDFiltered(ctx, zone.ID, zone, ep)
-			if err != nil {
-				return err
-			}
-
-			if len(matchedRecords) != 0 {
-				log.WithFields(log.Fields{
-					"zoneID":     zoneID,
-					"zoneName":   zone.Domain,
-					"dnsName":    ep.DNSName,
-					"recordType": ep.RecordType,
-				}).Warn("Records found which should not exist. Not touching it.")
-				continue
-			}
-
 			recordType, err := convertRecordType(ep.RecordType)
 			if err != nil {
 				return err
