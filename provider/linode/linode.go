@@ -152,6 +152,11 @@ func (p *LinodeProvider) fetchRecords(ctx context.Context, domainID int) ([]lino
 		return nil, err
 	}
 
+	log.WithFields(log.Fields{
+		"domainID": domainID,
+		"total":    len(records),
+	}).Debug("Fetched records for domain.")
+
 	return records, nil
 }
 
@@ -167,6 +172,11 @@ func (p *LinodeProvider) fetchRecordsFiltered(ctx context.Context, domainID int,
 	if err != nil {
 		return nil, err
 	}
+
+	log.WithFields(log.Fields{
+		"domainID": domainID,
+		"name":     name,
+	}).Debug("Fetched records with x-filter for domain.")
 
 	return records, nil
 }
@@ -186,6 +196,11 @@ func (p *LinodeProvider) fetchZones(ctx context.Context) ([]linodego.Domain, err
 
 		zones = append(zones, zone)
 	}
+
+	log.WithFields(log.Fields{
+		"total":    len(allZones),
+		"filtered": len(zones),
+	}).Debug("Fetched zones on account.")
 
 	return zones, nil
 }
