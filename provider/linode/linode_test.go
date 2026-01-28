@@ -296,24 +296,71 @@ func TestLinodeApplyChanges(t *testing.T) {
 		mock.Anything,
 	).Return(createZones(), nil).Once()
 
+	// With X-Filter, ListDomainRecords is now called with specific filters for each endpoint
+	// For creates: checking if foo.com TXT exists, create.bar.io A exists, bar.io A exists
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
 		1,
 		mock.Anything,
-	).Return(createFooRecords(), nil).Once()
+	).Return([]linodego.DomainRecord{{
+		ID:     12,
+		Type:   linodego.RecordTypeTXT,
+		Name:   "",
+		Target: "txt",
+	}}, nil).Once() // foo.com TXT record exists
+	
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
 		2,
 		mock.Anything,
-	).Return(createBarRecords(), nil).Once()
+	).Return([]linodego.DomainRecord{}, nil).Once() // create.bar.io A doesn't exist
+	
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		2,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{}, nil).Once() // bar.io A doesn't exist
+	
+	// For updates: checking if foo.com A exists
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{{
+		ID:     11,
+		Type:   linodego.RecordTypeA,
+		Name:   "",
+		Target: "targetFoo",
+	}}, nil).Once()
+	
+	// For deletes: checking if api.baz.com A exists and api.baz.com TXT exists
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
 		3,
 		mock.Anything,
-	).Return(createBazRecords(), nil).Once()
+	).Return([]linodego.DomainRecord{{
+		ID:     33,
+		Type:   linodego.RecordTypeA,
+		Name:   "api",
+		Target: "targetBaz",
+	}}, nil).Once()
+	
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		3,
+		mock.Anything,
+	).Return([]linodego.DomainRecord{{
+		ID:     34,
+		Type:   linodego.RecordTypeTXT,
+		Name:   "api",
+		Target: "txt",
+	}}, nil).Once()
 
 	// Apply Actions
 	mockDomainClient.On(
@@ -412,6 +459,7 @@ func TestLinodeApplyChangesTargetAdded(t *testing.T) {
 		mock.Anything,
 	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
 
+	// With X-Filter, query for existing A record with empty name
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
@@ -471,6 +519,7 @@ func TestLinodeApplyChangesTargetRemoved(t *testing.T) {
 		mock.Anything,
 	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
 
+	// With X-Filter, query for existing A record with empty name
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
@@ -527,12 +576,7 @@ func TestLinodeApplyChangesNoChanges(t *testing.T) {
 		mock.Anything,
 	).Return([]linodego.Domain{{Domain: "example.com", ID: 1}}, nil).Once()
 
-	mockDomainClient.On(
-		"ListDomainRecords",
-		mock.Anything,
-		1,
-		mock.Anything,
-	).Return([]linodego.DomainRecord{{ID: 11, Name: "", Type: "A", Target: "targetA"}}, nil).Once()
+	// No ListDomainRecords calls expected since there are no changes
 
 	err := provider.ApplyChanges(context.Background(), &plan.Changes{})
 	require.NoError(t, err)

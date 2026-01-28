@@ -155,6 +155,22 @@ func (p *LinodeProvider) fetchRecords(ctx context.Context, domainID int) ([]lino
 	return records, nil
 }
 
+// fetchRecordsFiltered fetches domain records filtered by name and type using X-Filter headers
+// This significantly reduces API calls and network overhead by filtering server-side
+func (p *LinodeProvider) fetchRecordsFiltered(ctx context.Context, domainID int, name string, recordType linodego.DomainRecordType) ([]linodego.DomainRecord, error) {
+	// Use X-Filter to filter records on the Linode API side
+	// Format: {"name": "value", "type": "value"}
+	filterStr := fmt.Sprintf(`{"name": "%s", "type": "%s"}`, name, recordType)
+	
+	opts := linodego.NewListOptions(0, filterStr)
+	records, err := p.Client.ListDomainRecords(ctx, domainID, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return records, nil
+}
+
 func (p *LinodeProvider) fetchZones(ctx context.Context) ([]linodego.Domain, error) {
 	var zones []linodego.Domain
 
@@ -264,30 +280,17 @@ func getPriority() *int {
 
 // ApplyChanges applies a given set of changes in a given zone.
 func (p *LinodeProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
-	recordsByZoneID := make(map[string][]linodego.DomainRecord)
-
 	zones, err := p.fetchZones(ctx)
 	if err != nil {
 		return err
 	}
 
 	zonesByID := make(map[string]linodego.Domain)
-
 	zoneNameIDMapper := provider.ZoneIDName{}
 
 	for _, z := range zones {
 		zoneNameIDMapper.Add(strconv.Itoa(z.ID), z.Domain)
 		zonesByID[strconv.Itoa(z.ID)] = z
-	}
-
-	// Fetch records for each zone
-	for _, zone := range zones {
-		records, err := p.fetchRecords(ctx, zone.ID)
-		if err != nil {
-			return err
-		}
-
-		recordsByZoneID[strconv.Itoa(zone.ID)] = append(recordsByZoneID[strconv.Itoa(zone.ID)], records...)
 	}
 
 	createsByZone := endpointsByZone(zoneNameIDMapper, changes.Create)
@@ -310,10 +313,12 @@ func (p *LinodeProvider) ApplyChanges(ctx context.Context, changes *plan.Changes
 			continue
 		}
 
-		records := recordsByZoneID[zoneID]
-
 		for _, ep := range creates {
-			matchedRecords := getRecordID(records, zone, ep)
+			// Use filtered query to check if record exists
+			matchedRecords, err := p.getRecordIDFiltered(ctx, zone.ID, zone, ep)
+			if err != nil {
+				return err
+			}
 
 			if len(matchedRecords) != 0 {
 				log.WithFields(log.Fields{
@@ -359,10 +364,12 @@ func (p *LinodeProvider) ApplyChanges(ctx context.Context, changes *plan.Changes
 			continue
 		}
 
-		records := recordsByZoneID[zoneID]
-
 		for _, ep := range updates {
-			matchedRecords := getRecordID(records, zone, ep)
+			// Use filtered query to find existing records
+			matchedRecords, err := p.getRecordIDFiltered(ctx, zone.ID, zone, ep)
+			if err != nil {
+				return err
+			}
 
 			if len(matchedRecords) == 0 {
 				log.WithFields(log.Fields{
@@ -464,10 +471,12 @@ func (p *LinodeProvider) ApplyChanges(ctx context.Context, changes *plan.Changes
 			continue
 		}
 
-		records := recordsByZoneID[zoneID]
-
 		for _, ep := range deletes {
-			matchedRecords := getRecordID(records, zone, ep)
+			// Use filtered query to find records to delete
+			matchedRecords, err := p.getRecordIDFiltered(ctx, zone.ID, zone, ep)
+			if err != nil {
+				return err
+			}
 
 			if len(matchedRecords) == 0 {
 				log.WithFields(log.Fields{
@@ -537,6 +546,8 @@ func getStrippedRecordName(zone linodego.Domain, ep endpoint.Endpoint) string {
 	return strings.TrimSuffix(ep.DNSName, "."+zone.Domain)
 }
 
+// getRecordID finds matching records by iterating through a pre-fetched list
+// This is used when we already have all records loaded (e.g., in ApplyChanges bulk operations)
 func getRecordID(records []linodego.DomainRecord, zone linodego.Domain, ep endpoint.Endpoint) []linodego.DomainRecord {
 	var matchedRecords []linodego.DomainRecord
 
@@ -547,4 +558,21 @@ func getRecordID(records []linodego.DomainRecord, zone linodego.Domain, ep endpo
 	}
 
 	return matchedRecords
+}
+
+// getRecordIDFiltered fetches and returns matching records using X-Filter for efficient API queries
+// This reduces API calls by filtering server-side instead of fetching all records
+func (p *LinodeProvider) getRecordIDFiltered(ctx context.Context, domainID int, zone linodego.Domain, ep endpoint.Endpoint) ([]linodego.DomainRecord, error) {
+	recordType, err := convertRecordType(ep.RecordType)
+	if err != nil {
+		return nil, err
+	}
+
+	name := getStrippedRecordName(zone, ep)
+	records, err := p.fetchRecordsFiltered(ctx, domainID, name, recordType)
+	if err != nil {
+		return nil, err
+	}
+
+	return records, nil
 }
