@@ -252,7 +252,7 @@ func buildProvider(
 	case "ovh":
 		p, err = ovh.NewOVHProvider(ctx, domainFilter, cfg.OVHEndpoint, cfg.OVHApiRateLimit, cfg.OVHEnableCNAMERelative, cfg.DryRun)
 	case "linode":
-		p, err = linode.NewLinodeProvider(domainFilter, cfg.DryRun)
+		p, err = linode.NewLinodeProvider(domainFilter, cfg.ManagedDNSRecordTypes, cfg.ExcludeDNSRecordTypes, cfg.Registry, cfg.DryRun)
 	case "dnsimple":
 		p, err = dnsimple.NewDnsimpleProvider(domainFilter, zoneIDFilter, cfg.DryRun)
 	case "coredns", "skydns":

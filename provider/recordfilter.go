@@ -16,13 +16,30 @@ limitations under the License.
 
 package provider
 
+// supportedRecordTypesMap is the source of truth for record types supported by external-dns.
+// Currently A, AAAA, CNAME, SRV, TXT and NS record types are supported.
+var supportedRecordTypesMap = map[string]struct{}{
+	"A":     {},
+	"AAAA":  {},
+	"CNAME": {},
+	"SRV":   {},
+	"TXT":   {},
+	"NS":    {},
+}
+
+// GetSupportedRecordTypes returns a slice of all supported record types.
+// The order is not guaranteed.
+func GetSupportedRecordTypes() []string {
+	result := make([]string, 0, len(supportedRecordTypesMap))
+	for recordType := range supportedRecordTypesMap {
+		result = append(result, recordType)
+	}
+	return result
+}
+
 // SupportedRecordType returns true only for supported record types.
 // Currently A, AAAA, CNAME, SRV, TXT and NS record types are supported.
 func SupportedRecordType(recordType string) bool {
-	switch recordType {
-	case "A", "AAAA", "CNAME", "SRV", "TXT", "NS":
-		return true
-	default:
-		return false
-	}
+	_, ok := supportedRecordTypesMap[recordType]
+	return ok
 }

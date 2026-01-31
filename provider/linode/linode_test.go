@@ -145,11 +145,11 @@ func TestLinodeConvertRecordType(t *testing.T) {
 
 func TestNewLinodeProvider(t *testing.T) {
 	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
-	_, err := NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), true)
+	_, err := NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), []string{}, []string{}, "noop", true)
 	require.NoError(t, err)
 
 	_ = os.Unsetenv("LINODE_TOKEN")
-	_, err = NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), true)
+	_, err = NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), []string{}, []string{}, "noop", true)
 	require.Error(t, err)
 }
 
@@ -171,9 +171,11 @@ func TestLinodeFetchZonesNoFilters(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	mockDomainClient.On(
@@ -194,9 +196,11 @@ func TestLinodeFetchZonesWithFilter(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{".com"}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{".com"}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	mockDomainClient.On(
@@ -234,9 +238,11 @@ func TestLinodeRecords(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	mockDomainClient.On(
@@ -284,9 +290,11 @@ func TestLinodeApplyChanges(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	// Dummy Data
@@ -296,34 +304,6 @@ func TestLinodeApplyChanges(t *testing.T) {
 		mock.Anything,
 	).Return(createZones(), nil).Once()
 
-	// With X-Filter, ListDomainRecords is now called with specific filters for each endpoint
-	// For creates: checking if foo.com TXT exists, create.bar.io A exists, bar.io A exists
-	mockDomainClient.On(
-		"ListDomainRecords",
-		mock.Anything,
-		1,
-		mock.Anything,
-	).Return([]linodego.DomainRecord{{
-		ID:     12,
-		Type:   linodego.RecordTypeTXT,
-		Name:   "",
-		Target: "txt",
-	}}, nil).Once() // foo.com TXT record exists
-	
-	mockDomainClient.On(
-		"ListDomainRecords",
-		mock.Anything,
-		2,
-		mock.Anything,
-	).Return([]linodego.DomainRecord{}, nil).Once() // create.bar.io A doesn't exist
-	
-	mockDomainClient.On(
-		"ListDomainRecords",
-		mock.Anything,
-		2,
-		mock.Anything,
-	).Return([]linodego.DomainRecord{}, nil).Once() // bar.io A doesn't exist
-	
 	// For updates: checking if foo.com A exists
 	mockDomainClient.On(
 		"ListDomainRecords",
@@ -336,7 +316,7 @@ func TestLinodeApplyChanges(t *testing.T) {
 		Name:   "",
 		Target: "targetFoo",
 	}}, nil).Once()
-	
+
 	// For deletes: checking if api.baz.com A exists and api.baz.com TXT exists
 	mockDomainClient.On(
 		"ListDomainRecords",
@@ -349,7 +329,7 @@ func TestLinodeApplyChanges(t *testing.T) {
 		Name:   "api",
 		Target: "targetBaz",
 	}}, nil).Once()
-	
+
 	mockDomainClient.On(
 		"ListDomainRecords",
 		mock.Anything,
@@ -408,6 +388,16 @@ func TestLinodeApplyChanges(t *testing.T) {
 		},
 	).Return(&linodego.DomainRecord{}, nil).Once()
 
+	mockDomainClient.On(
+		"CreateDomainRecord",
+		mock.Anything,
+		1,
+		linodego.DomainRecordCreateOptions{
+			Type: "TXT", Name: "", Target: "txt",
+			Priority: getPriority(), Weight: getWeight(linodego.RecordTypeTXT), Port: getPort(), TTLSec: 0,
+		},
+	).Return(&linodego.DomainRecord{}, nil).Once()
+
 	err := provider.ApplyChanges(context.Background(), &plan.Changes{
 		Create: []*endpoint.Endpoint{{
 			DNSName:    "create.bar.io",
@@ -418,7 +408,6 @@ func TestLinodeApplyChanges(t *testing.T) {
 			RecordType: "A",
 			Targets:    []string{"targetBar"},
 		}, {
-			// This record should be skipped as it already exists
 			DNSName:    "foo.com",
 			RecordType: "TXT",
 			Targets:    []string{"txt"},
@@ -447,9 +436,11 @@ func TestLinodeApplyChangesTargetAdded(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	// Dummy Data
@@ -507,9 +498,11 @@ func TestLinodeApplyChangesTargetRemoved(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	// Dummy Data
@@ -564,9 +557,11 @@ func TestLinodeApplyChangesNoChanges(t *testing.T) {
 	mockDomainClient := MockDomainClient{}
 
 	provider := &LinodeProvider{
-		Client:       &mockDomainClient,
-		domainFilter: endpoint.NewDomainFilter([]string{}),
-		DryRun:       false,
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		DryRun:                false,
 	}
 
 	// Dummy Data
@@ -582,4 +577,643 @@ func TestLinodeApplyChangesNoChanges(t *testing.T) {
 	require.NoError(t, err)
 
 	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithManagedTypes(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "CNAME"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// Expect ListDomainRecords to be called with X-Filter for A and CNAME types
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify that the X-Filter is set and contains the expected record types
+			if opts == nil || opts.Filter == "" {
+				return false
+			}
+			// The filter should contain both A and CNAME
+			return opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithExcludedTypes(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "AAAA", "CNAME", "TXT"},
+		excludeDNSRecordTypes: []string{"TXT"},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// Expect ListDomainRecords to be called with X-Filter excluding TXT
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify that the X-Filter is set
+			if opts == nil || opts.Filter == "" {
+				return false
+			}
+			// The filter should not include TXT since it's excluded
+			return opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithAllSupportedTypes(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "AAAA", "CNAME", "SRV", "TXT", "NS"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// When all supported types are managed, no filter should be applied (empty filter string)
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify that no X-Filter is set when all types are managed
+			return opts != nil && opts.Filter == ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithTXTRegistryAddsTXT(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "CNAME"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "txt",
+		DryRun:                false,
+	}
+
+	// TXT should be added to the filter automatically when using TXT registry
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify that the X-Filter includes TXT even though it wasn't in managedRecordTypes
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 0)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Domain Filtering X-Filter Tests
+
+func TestLinodeFetchZonesWithSingleExactDomain(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{"foo.com"}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		domainFilterData: dfd{
+			Include: []string{"foo.com"},
+		},
+		DryRun: false,
+	}
+
+	// Should use X-Filter with single exact match
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter is set for exact domain match
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.Domain{{ID: 1, Domain: "foo.com"}}, nil).Once()
+
+	zones, err := provider.fetchZones(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, zones, 1)
+	assert.Equal(t, "foo.com", zones[0].Domain)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchZonesWithMultipleExactDomains(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{"foo.com", "bar.io"}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		domainFilterData: dfd{
+			Include: []string{"foo.com", "bar.io"},
+		},
+		DryRun: false,
+	}
+
+	// Should use X-Filter with OR for multiple domains
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter is set with multiple domains
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.Domain{
+		{ID: 1, Domain: "foo.com"},
+		{ID: 2, Domain: "bar.io"},
+	}, nil).Once()
+
+	zones, err := provider.fetchZones(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, zones, 2)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchZonesWithExcludeDomains(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{"foo.com", "baz.com"}), // Include some domains
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		domainFilterData: dfd{
+			Include: []string{"foo.com", "baz.com"},
+			Exclude: []string{"bar.io"},
+		},
+		DryRun: false,
+	}
+
+	// With both include and exclude and multiple includes, it can't be expressed in X-Filter
+	// Should fall back to fetching all zones client-side
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Complex filter falls back to empty filter
+			return opts != nil && opts.Filter == ""
+		}),
+	).Return(createZones(), nil).Once()
+
+	zones, err := provider.fetchZones(context.Background())
+	require.NoError(t, err)
+	// Should filter to only foo.com and baz.com (excluding bar.io) client-side
+	assert.Len(t, zones, 2)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchZonesWithSimpleExclude(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{"foo.com"}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		domainFilterData: dfd{
+			Include: []string{"foo.com"},
+			Exclude: []string{"bar.io"},
+		},
+		DryRun: false,
+	}
+
+	// Single include with excludes can be expressed in X-Filter
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter is set
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.Domain{
+		{ID: 1, Domain: "foo.com"},
+	}, nil).Once()
+
+	zones, err := provider.fetchZones(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, zones, 1)
+	assert.Equal(t, "foo.com", zones[0].Domain)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchZonesWithRegexFilter(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{".com"}), // wildcard triggers regex
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		domainFilterData: dfd{
+			Include: []string{".com"},
+		},
+		DryRun: false,
+	}
+
+	// Should NOT use X-Filter due to wildcard, fetch all and apply client-side
+	mockDomainClient.On(
+		"ListDomains",
+		mock.Anything,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify NO X-Filter is set due to wildcard
+			return opts != nil && opts.Filter == ""
+		}),
+	).Return(createZones(), nil).Once()
+
+	zones, err := provider.fetchZones(context.Background())
+	require.NoError(t, err)
+	// Should filter to only .com domains client-side
+	assert.Len(t, zones, 2)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Record Type Filter Edge Cases
+
+func TestLinodeFetchRecordsWithEmptyManagedTypes(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{},
+		excludeDNSRecordTypes: []string{},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// Empty managed types should fetch all records (no X-Filter)
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify NO X-Filter when managed types is empty
+			return opts != nil && opts.Filter == ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithSingleManagedType(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// Single type should use simple equality X-Filter
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter is set for single type
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithAllTypesExcluded(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "TXT"},
+		excludeDNSRecordTypes: []string{"A", "TXT"},
+		registry:              "noop",
+		DryRun:                false,
+	}
+
+	// All types excluded should return empty filter
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify NO X-Filter when all types excluded
+			return opts != nil && opts.Filter == ""
+		}),
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 0)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Registry + Managed Types Interaction Tests
+
+func TestLinodeFetchRecordsWithTXTRegistryAndTXTInManaged(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "TXT"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "txt",
+		DryRun:                false,
+	}
+
+	// TXT already in managed types, should not duplicate
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter includes A and TXT
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithTXTRegistryAndTXTExcluded(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "TXT"},
+		excludeDNSRecordTypes: []string{"TXT"},
+		registry:              "txt",
+		DryRun:                false,
+	}
+
+	// TXT is excluded but needed for registry - exclude takes precedence
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter only includes A (TXT excluded)
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{{
+		ID:     1,
+		Type:   linodego.RecordTypeA,
+		Name:   "test",
+		Target: "1.2.3.4",
+	}}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 1)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+func TestLinodeFetchRecordsWithDynamoDBRegistry(t *testing.T) {
+	mockDomainClient := MockDomainClient{}
+
+	provider := &LinodeProvider{
+		Client:                &mockDomainClient,
+		domainFilter:          endpoint.NewDomainFilter([]string{}),
+		managedRecordTypes:    []string{"A", "CNAME"},
+		excludeDNSRecordTypes: []string{},
+		registry:              "dynamodb",
+		DryRun:                false,
+	}
+
+	// DynamoDB registry should also add TXT
+	mockDomainClient.On(
+		"ListDomainRecords",
+		mock.Anything,
+		1,
+		mock.MatchedBy(func(opts *linodego.ListOptions) bool {
+			// Verify X-Filter includes A, CNAME, and TXT
+			return opts != nil && opts.Filter != ""
+		}),
+	).Return([]linodego.DomainRecord{}, nil).Once()
+
+	records, err := provider.fetchRecords(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Len(t, records, 0)
+
+	mockDomainClient.AssertExpectations(t)
+}
+
+// Constructor Validation Tests
+
+func TestNewLinodeProviderWithTXTRegistry(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"A", "CNAME"},
+		[]string{},
+		"txt",
+		false,
+	)
+	require.NoError(t, err)
+
+	// TXT should be automatically added
+	assert.Contains(t, provider.managedRecordTypes, "TXT")
+	assert.Contains(t, provider.managedRecordTypes, "A")
+	assert.Contains(t, provider.managedRecordTypes, "CNAME")
+}
+
+func TestNewLinodeProviderWithDynamoDBRegistry(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"A", "CNAME"},
+		[]string{},
+		"dynamodb",
+		false,
+	)
+	require.NoError(t, err)
+
+	// TXT should be automatically added for DynamoDB too
+	assert.Contains(t, provider.managedRecordTypes, "TXT")
+	assert.Contains(t, provider.managedRecordTypes, "A")
+	assert.Contains(t, provider.managedRecordTypes, "CNAME")
+}
+
+func TestNewLinodeProviderWithNoopRegistry(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"A", "CNAME"},
+		[]string{},
+		"noop",
+		false,
+	)
+	require.NoError(t, err)
+
+	// TXT should NOT be added for noop registry
+	assert.NotContains(t, provider.managedRecordTypes, "TXT")
+	assert.Contains(t, provider.managedRecordTypes, "A")
+	assert.Contains(t, provider.managedRecordTypes, "CNAME")
+}
+
+func TestNewLinodeProviderWithLowercaseRecordTypes(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"a", "cname", "txt"},
+		[]string{},
+		"noop",
+		false,
+	)
+	require.NoError(t, err)
+
+	// Record types should be uppercased
+	assert.Contains(t, provider.managedRecordTypes, "A")
+	assert.Contains(t, provider.managedRecordTypes, "CNAME")
+	assert.Contains(t, provider.managedRecordTypes, "TXT")
+	assert.NotContains(t, provider.managedRecordTypes, "a")
+	assert.NotContains(t, provider.managedRecordTypes, "cname")
+}
+
+func TestNewLinodeProviderWithLowercaseExcludedTypes(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"A", "CNAME", "TXT"},
+		[]string{"txt", "ns"},
+		"noop",
+		false,
+	)
+	require.NoError(t, err)
+
+	// Excluded types should be uppercased
+	assert.Contains(t, provider.excludeDNSRecordTypes, "TXT")
+	assert.Contains(t, provider.excludeDNSRecordTypes, "NS")
+	assert.NotContains(t, provider.excludeDNSRecordTypes, "txt")
+	assert.NotContains(t, provider.excludeDNSRecordTypes, "ns")
+}
+
+func TestNewLinodeProviderWithTXTAlreadyInManagedTypes(t *testing.T) {
+	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
+	defer os.Unsetenv("LINODE_TOKEN")
+
+	provider, err := NewLinodeProvider(
+		endpoint.NewDomainFilter([]string{}),
+		[]string{"A", "TXT"},
+		[]string{},
+		"txt",
+		false,
+	)
+	require.NoError(t, err)
+
+	// TXT should not be duplicated
+	txtCount := 0
+	for _, recordType := range provider.managedRecordTypes {
+		if recordType == "TXT" {
+			txtCount++
+		}
+	}
+	assert.Equal(t, 1, txtCount, "TXT should only appear once in managedRecordTypes")
 }
