@@ -145,11 +145,11 @@ func TestLinodeConvertRecordType(t *testing.T) {
 
 func TestNewLinodeProvider(t *testing.T) {
 	_ = os.Setenv("LINODE_TOKEN", "xxxxxxxxxxxxxxxxx")
-	_, err := NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), []string{}, []string{}, "noop", true)
+	_, err := NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), endpoint.NewRecordFilter([]string{}), []string{}, []string{}, "noop", true)
 	require.NoError(t, err)
 
 	_ = os.Unsetenv("LINODE_TOKEN")
-	_, err = NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), []string{}, []string{}, "noop", true)
+	_, err = NewLinodeProvider(endpoint.NewDomainFilter([]string{"ext-dns-test.zalando.to."}), endpoint.NewRecordFilter([]string{}), []string{}, []string{}, "noop", true)
 	require.Error(t, err)
 }
 
@@ -1103,6 +1103,7 @@ func TestNewLinodeProviderWithTXTRegistry(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"A", "CNAME"},
 		[]string{},
 		"txt",
@@ -1122,6 +1123,7 @@ func TestNewLinodeProviderWithDynamoDBRegistry(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"A", "CNAME"},
 		[]string{},
 		"dynamodb",
@@ -1141,6 +1143,7 @@ func TestNewLinodeProviderWithNoopRegistry(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"A", "CNAME"},
 		[]string{},
 		"noop",
@@ -1160,6 +1163,7 @@ func TestNewLinodeProviderWithLowercaseRecordTypes(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"a", "cname", "txt"},
 		[]string{},
 		"noop",
@@ -1181,6 +1185,7 @@ func TestNewLinodeProviderWithLowercaseExcludedTypes(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"A", "CNAME", "TXT"},
 		[]string{"txt", "ns"},
 		"noop",
@@ -1201,6 +1206,7 @@ func TestNewLinodeProviderWithTXTAlreadyInManagedTypes(t *testing.T) {
 
 	provider, err := NewLinodeProvider(
 		endpoint.NewDomainFilter([]string{}),
+		endpoint.NewRecordFilter([]string{}),
 		[]string{"A", "TXT"},
 		[]string{},
 		"txt",

@@ -71,6 +71,7 @@ func BenchmarkApplyChanges(b *testing.B) {
 	provider := &LinodeProvider{
 		Client:       mockDomainClient,
 		domainFilter: endpoint.NewDomainFilter([]string{}),
+		recordFilter: endpoint.NewRecordFilter([]string{}),
 		DryRun:       false,
 	}
 

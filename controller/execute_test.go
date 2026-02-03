@@ -215,8 +215,9 @@ func TestBuildProvider(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+			recordFilter := endpoint.NewRecordFilter([]string{})
 
-			p, err := buildProvider(t.Context(), tt.cfg, domainFilter)
+			p, err := buildProvider(t.Context(), tt.cfg, domainFilter, recordFilter)
 
 			if tt.expectedError != "" {
 				assert.Error(t, err)
@@ -456,7 +457,8 @@ func TestControllerRunCancelContextStopsLoop(t *testing.T) {
 		endpoint.WithRegexDomainFilter(cfg.RegexDomainFilter),
 		endpoint.WithRegexDomainExclude(cfg.RegexDomainExclude),
 	)
-	p, err := buildProvider(ctx, cfg, domainFilter)
+	recordFilter := endpoint.NewRecordFilter([]string{})
+	p, err := buildProvider(ctx, cfg, domainFilter, recordFilter)
 	require.NoError(t, err)
 	ctrl, err := buildController(ctx, cfg, src, p, domainFilter)
 	require.NoError(t, err)

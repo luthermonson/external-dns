@@ -79,6 +79,10 @@ type Config struct {
 	DomainExclude                                 []string
 	RegexDomainFilter                             *regexp.Regexp
 	RegexDomainExclude                            *regexp.Regexp
+	RecordFilter                                  []string
+	RecordExclude                                 []string
+	RegexRecordFilter                             *regexp.Regexp
+	RegexRecordExclude                            *regexp.Regexp
 	ZoneNameFilter                                []string
 	ZoneIDFilter                                  []string
 	TargetNetFilter                               []string
@@ -273,6 +277,8 @@ var defaultConfig = &Config{
 	DryRun:                       false,
 	ExcludeDNSRecordTypes:        []string{},
 	DomainExclude:                []string{},
+	RecordFilter:                 []string{},
+	RecordExclude:                []string{},
 	ExcludeTargetNets:            []string{},
 	EmitEvents:                   []string{},
 	ExcludeUnschedulable:         true,
@@ -337,6 +343,8 @@ var defaultConfig = &Config{
 	PublishInternal:              false,
 	RegexDomainExclude:           regexp.MustCompile(""),
 	RegexDomainFilter:            regexp.MustCompile(""),
+	RegexRecordExclude:           regexp.MustCompile(""),
+	RegexRecordFilter:            regexp.MustCompile(""),
 	Registry:                     "txt",
 	RequestTimeout:               time.Second * 30,
 	RFC2136BatchChangeSize:       50,
@@ -548,6 +556,10 @@ func bindFlags(b flags.FlagBinder, cfg *Config) {
 	b.StringsVar("exclude-domains", "Exclude subdomains (optional)", []string{""}, &cfg.DomainExclude)
 	b.RegexpVar("regex-domain-filter", "Limit possible domains and target zones by a Regex filter; Overrides domain-filter (optional)", defaultConfig.RegexDomainFilter, &cfg.RegexDomainFilter)
 	b.RegexpVar("regex-domain-exclusion", "Regex filter that excludes domains and target zones matched by regex-domain-filter (optional)", defaultConfig.RegexDomainExclude, &cfg.RegexDomainExclude)
+	b.StringsVar("record-filter", "Limit possible target records by a DNS record name; specify multiple times for multiple records (optional)", []string{""}, &cfg.RecordFilter)
+	b.StringsVar("exclude-records", "Exclude DNS record names (optional)", []string{""}, &cfg.RecordExclude)
+	b.RegexpVar("regex-record-filter", "Limit possible DNS record names by a Regex filter; Overrides record-filter (optional)", defaultConfig.RegexRecordFilter, &cfg.RegexRecordFilter)
+	b.RegexpVar("regex-record-exclusion", "Regex filter that excludes DNS record names matched by regex-record-filter (optional)", defaultConfig.RegexRecordExclude, &cfg.RegexRecordExclude)
 	b.StringsVar("zone-name-filter", "Filter target zones by zone domain (For now, only AzureDNS provider is using this flag); specify multiple times for multiple zones (optional)", []string{""}, &cfg.ZoneNameFilter)
 	b.StringsVar("zone-id-filter", "Filter target zones by hosted zone id; specify multiple times for multiple zones (optional)", []string{""}, &cfg.ZoneIDFilter)
 	b.StringVar("google-project", "When using the Google provider, current project is auto-detected, when running on GCP. Specify other project with this. Must be specified when running outside GCP.", defaultConfig.GoogleProject, &cfg.GoogleProject)

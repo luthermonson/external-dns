@@ -53,10 +53,12 @@ type LinodeProvider struct {
 	provider.BaseProvider
 	Client                LinodeDomainClient
 	domainFilter          *endpoint.DomainFilter
+	recordFilter          *endpoint.RecordFilter
 	managedRecordTypes    []string
 	excludeDNSRecordTypes []string
 	registry              string
 	domainFilterData      dfd
+	recordFilterData      rfd
 	DryRun                bool
 }
 
@@ -93,8 +95,15 @@ type dfd struct {
 	RegexExclude string   `json:"regexExclude,omitempty"`
 }
 
+type rfd struct {
+	Include      []string `json:"include,omitempty"`
+	Exclude      []string `json:"exclude,omitempty"`
+	RegexInclude string   `json:"regexInclude,omitempty"`
+	RegexExclude string   `json:"regexExclude,omitempty"`
+}
+
 // NewLinodeProvider initializes a new Linode DNS based Provider.
-func NewLinodeProvider(domainFilter *endpoint.DomainFilter, managedRecordTypes, excludedRecordTypes []string, registryConfig string, dryRun bool) (*LinodeProvider, error) {
+func NewLinodeProvider(domainFilter *endpoint.DomainFilter, recordFilter *endpoint.RecordFilter, managedRecordTypes, excludedRecordTypes []string, registryConfig string, dryRun bool) (*LinodeProvider, error) {
 	token, ok := os.LookupEnv("LINODE_TOKEN")
 	if !ok {
 		return nil, fmt.Errorf("no token found")
@@ -154,13 +163,38 @@ func NewLinodeProvider(domainFilter *endpoint.DomainFilter, managedRecordTypes, 
 		}
 	}
 
+	var recordFilterData rfd
+	if recordFilter != nil {
+		// Extract both includes and excludes by marshaling and unmarshaling the record filter because no exported members
+		filterData, err := recordFilter.MarshalJSON()
+		if err != nil {
+			log.WithFields(log.Fields{
+				"filterData": string(filterData),
+			}).Debug("Error unmarshaling record filter data.")
+			return nil, err
+		}
+
+		log.WithFields(log.Fields{
+			"filterData": string(filterData),
+		}).Debug("Record filter data.")
+
+		if err := json.Unmarshal(filterData, &recordFilterData); err != nil {
+			log.WithFields(log.Fields{
+				"recordFilterData": recordFilterData,
+			}).Debug("Error unmarshaling record filter data.")
+			return nil, err
+		}
+	}
+
 	return &LinodeProvider{
 		Client:                &linodeClient,
 		domainFilter:          domainFilter,
+		recordFilter:          recordFilter,
 		managedRecordTypes:    upperManaged,
 		excludeDNSRecordTypes: upperExcluded,
 		registry:              registryConfig,
 		domainFilterData:      domainFilterData,
+		recordFilterData:      recordFilterData,
 		DryRun:                dryRun,
 	}, nil
 }
@@ -198,6 +232,14 @@ func (p *LinodeProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, err
 				// translated to zone name for the endpoint entry.
 				if r.Name == "" {
 					name = zone.Domain
+				}
+
+				// Apply record filter if configured
+				if p.recordFilter != nil && !p.recordFilter.Match(name) {
+					log.WithFields(log.Fields{
+						"record": name,
+					}).Debug("Record filtered out by record filter.")
+					continue
 				}
 
 				endpoints = append(endpoints, endpoint.NewEndpointWithTTL(name, string(r.Type), endpoint.TTL(r.TTLSec), r.Target))
@@ -424,7 +466,7 @@ func (p *LinodeProvider) buildDomainFilter() (string, error) {
 	return string(xFilter), nil
 }
 
-// buildRecordTypeFilter constructs an X-Filter string for record types based on managedRecordTypes and excludeDNSRecordTypes
+// buildRecordTypeFilter constructs an X-Filter string for record types and record names
 // Returns empty string if no filtering is needed
 func (p *LinodeProvider) buildRecordTypeFilter() (string, error) {
 	var filteredTypes []string
@@ -436,45 +478,170 @@ func (p *LinodeProvider) buildRecordTypeFilter() (string, error) {
 		filteredTypes = append(filteredTypes, recordType)
 	}
 
-	// If no types remain after filtering, return empty string (fetch all records)
-	if len(filteredTypes) == 0 {
+	// Build record name filter conditions
+	var recordNameFilter *linodego.Filter
+	if p.recordFilter != nil && p.recordFilter.IsConfigured() {
+		log.Debug("Record filter is configured, trying to build record name X-Filter.")
+
+		// If regex filters are present, we can't express them in X-Filter
+		if p.recordFilterData.RegexInclude != "" || p.recordFilterData.RegexExclude != "" {
+			log.WithFields(log.Fields{
+				"regexInclude": p.recordFilterData.RegexInclude,
+				"regexExclude": p.recordFilterData.RegexExclude,
+			}).Debug("Can't express regex as an X-Filter, will apply record filter in-memory.")
+		} else {
+			// Check if includes contain wildcards or patterns
+			hasWildcard := false
+			for _, f := range p.recordFilterData.Include {
+				if strings.HasPrefix(f, ".") || strings.Contains(f, "*") {
+					hasWildcard = true
+					break
+				}
+			}
+			for _, f := range p.recordFilterData.Exclude {
+				if strings.HasPrefix(f, ".") || strings.Contains(f, "*") {
+					hasWildcard = true
+					break
+				}
+			}
+
+			if hasWildcard {
+				log.WithFields(log.Fields{
+					"include": p.recordFilterData.Include,
+					"exclude": p.recordFilterData.Exclude,
+				}).Debug("Can't express wildcards as an X-Filter, will apply record filter in-memory.")
+			} else {
+				// We can build an X-Filter for record names
+				recordNameFilter = &linodego.Filter{}
+				includeCount := len(p.recordFilterData.Include)
+				excludeCount := len(p.recordFilterData.Exclude)
+
+				if includeCount > 0 && excludeCount > 0 {
+					// Complex case: fall back to in-memory filtering
+					log.Debug("Complex include+exclude record filter detected, falling back to in-memory filtering")
+					recordNameFilter = nil
+				} else if includeCount > 0 {
+					// Only includes
+					if includeCount == 1 {
+						recordNameFilter.AddField(linodego.Eq, "name", p.recordFilterData.Include[0])
+					} else {
+						recordNameFilter.Operator = "+or"
+						for _, name := range p.recordFilterData.Include {
+							recordNameFilter.Children = append(recordNameFilter.Children, &linodego.Comp{
+								Column:   "name",
+								Operator: linodego.Eq,
+								Value:    name,
+							})
+						}
+					}
+				} else if excludeCount > 0 {
+					// Only excludes
+					if excludeCount == 1 {
+						recordNameFilter.AddField(linodego.Neq, "name", p.recordFilterData.Exclude[0])
+					} else {
+						recordNameFilter.Operator = "+and"
+						for _, name := range p.recordFilterData.Exclude {
+							recordNameFilter.Children = append(recordNameFilter.Children, &linodego.Comp{
+								Column:   "name",
+								Operator: linodego.Neq,
+								Value:    name,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Build the combined filter
+	var combinedFilter linodego.Filter
+
+	// If no types remain after filtering, and no record name filter, return empty string
+	if len(filteredTypes) == 0 && recordNameFilter == nil {
 		return "", nil
 	}
 
-	// If filteredTypes is just a list of all supported types then no filter
-	allSupportedTypes := provider.GetSupportedRecordTypes()
-	if len(filteredTypes) == len(allSupportedTypes) {
-		slices.Sort(allSupportedTypes)
-		slices.Sort(filteredTypes)
-
-		if slices.Equal(allSupportedTypes, filteredTypes) {
-			return "", nil
+	// Check if we need a type filter
+	needsTypeFilter := false
+	if len(filteredTypes) > 0 {
+		// If filteredTypes is just a list of all supported types then no filter
+		allSupportedTypes := provider.GetSupportedRecordTypes()
+		if len(filteredTypes) != len(allSupportedTypes) {
+			needsTypeFilter = true
+		} else {
+			slices.Sort(allSupportedTypes)
+			slices.Sort(filteredTypes)
+			if !slices.Equal(allSupportedTypes, filteredTypes) {
+				needsTypeFilter = true
+			}
 		}
 	}
 
-	// managed/excluded don't cancel each other out and managed is not the same as all supported, build a filter
-	var filter linodego.Filter
+	// Build type filter
+	var typeFilter *linodego.Filter
+	if needsTypeFilter {
+		typeFilter = &linodego.Filter{}
+		if len(filteredTypes) == 1 {
+			// Single type - simple equality
+			typeFilter.AddField(linodego.Eq, "type", filteredTypes[0])
+		} else {
+			// Multiple types - use OR
+			typeFilter.Operator = "+or"
+			for _, recordType := range filteredTypes {
+				typeFilter.Children = append(typeFilter.Children, &linodego.Comp{
+					Column:   "type",
+					Operator: linodego.Eq,
+					Value:    recordType,
+				})
+			}
+		}
+	}
 
-	// Build filter based on number of types
-	if len(filteredTypes) == 1 {
-		// Single type - simple equality
-		filter.AddField(linodego.Eq, "type", filteredTypes[0])
+	// Combine filters
+	if typeFilter != nil && recordNameFilter != nil {
+		// Both filters - combine with AND
+		combinedFilter.Operator = "+and"
+
+		// For type filter
+		if len(typeFilter.Children) == 1 && typeFilter.Operator == "" {
+			// Single condition
+			combinedFilter.Children = append(combinedFilter.Children, typeFilter.Children[0])
+		} else {
+			// Multiple conditions - need to preserve the OR structure
+			// We can't nest filters directly, so we'll create a workaround
+			// For now, fall back to applying record filter in-memory when both are complex
+			log.Debug("Complex type+record filter combination, will apply record filter in-memory")
+			if len(filteredTypes) > 0 {
+				combinedFilter = *typeFilter
+			}
+		}
+
+		// For record name filter
+		if len(recordNameFilter.Children) == 1 && recordNameFilter.Operator == "" {
+			// Single condition
+			combinedFilter.Children = append(combinedFilter.Children, recordNameFilter.Children[0])
+		} else {
+			// Complex - already logged above, skip adding
+		}
+	} else if typeFilter != nil {
+		// Only type filter
+		combinedFilter = *typeFilter
+	} else if recordNameFilter != nil {
+		// Only record name filter
+		combinedFilter = *recordNameFilter
 	} else {
-		// Multiple types - use OR
-		filter.Operator = "+or"
-		for _, recordType := range filteredTypes {
-			filter.Children = append(filter.Children, &linodego.Comp{
-				Column:   "type",
-				Operator: linodego.Eq,
-				Value:    recordType,
-			})
-		}
+		// No filters needed
+		return "", nil
 	}
 
-	filterBytes, err := filter.MarshalJSON()
+	filterBytes, err := combinedFilter.MarshalJSON()
 	if err != nil {
 		return "", err
 	}
+
+	log.WithFields(log.Fields{
+		"xFilter": string(filterBytes),
+	}).Debug("Built record type and name X-Filter.")
 
 	return string(filterBytes), nil
 }

@@ -121,7 +121,14 @@ func Execute() {
 		endpoint.WithRegexDomainExclude(cfg.RegexDomainExclude),
 	)
 
-	prvdr, err := buildProvider(ctx, cfg, domainFilter)
+	recordFilter := endpoint.NewRecordFilterWithOptions(
+		endpoint.WithRecordFilter(cfg.RecordFilter),
+		endpoint.WithRecordExclude(cfg.RecordExclude),
+		endpoint.WithRegexRecordFilter(cfg.RegexRecordFilter),
+		endpoint.WithRegexRecordExclude(cfg.RegexRecordExclude),
+	)
+
+	prvdr, err := buildProvider(ctx, cfg, domainFilter, recordFilter)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,6 +167,7 @@ func buildProvider(
 	ctx context.Context,
 	cfg *externaldns.Config,
 	domainFilter *endpoint.DomainFilter,
+	recordFilter *endpoint.RecordFilter,
 ) (provider.Provider, error) {
 	var p provider.Provider
 	var err error
@@ -252,7 +260,7 @@ func buildProvider(
 	case "ovh":
 		p, err = ovh.NewOVHProvider(ctx, domainFilter, cfg.OVHEndpoint, cfg.OVHApiRateLimit, cfg.OVHEnableCNAMERelative, cfg.DryRun)
 	case "linode":
-		p, err = linode.NewLinodeProvider(domainFilter, cfg.ManagedDNSRecordTypes, cfg.ExcludeDNSRecordTypes, cfg.Registry, cfg.DryRun)
+		p, err = linode.NewLinodeProvider(domainFilter, recordFilter, cfg.ManagedDNSRecordTypes, cfg.ExcludeDNSRecordTypes, cfg.Registry, cfg.DryRun)
 	case "dnsimple":
 		p, err = dnsimple.NewDnsimpleProvider(domainFilter, zoneIDFilter, cfg.DryRun)
 	case "coredns", "skydns":
